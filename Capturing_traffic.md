@@ -216,3 +216,111 @@ samba-tool domain exportkeytab --principal=Admin@DOMAIN.TEST /srv/shared/Admin_s
 ___
 
 
+### Создание keytab файла на контроллере домена Windows Server 2019
+
+Если машина Windows была введена в домен MS AD, создание keytab файла целесообразно провести на контроллере домена. В отличие от Linux, в Windows для создания keytab файлов необходимо знать пароль учетной записи пользователя. В случае с учетными записями машин, пароль генерируется автоматически при создании учетной записи и не отображается, что затрудняет его использование. Однако, для создания keytab файла можно использовать ключ Kerberos для учетной записи машины, который можно извлечь с помощью программы Mimikatz. В этом разделе описан процесс создания keytab файла с использованием Kerberos-ключа для учетных записей машины и пользователя.
+
+
+**1. Использование Mimikatz для извлечения Kerberos-ключа.**
+
+**1.1 Установите программу Mimikatz.**  
+Для скачивания программы Mimikatz перейдите по следующему [ссылке на GitHub](https://github.com/ParrotSec/mimikatz/tree/master/x64). Выберите версию, соответствующую вашей архитектуре системы.
+
+**1.2 Запустите программу Mimikatz**  
+После скачивания и распаковки Mimikatz,  выполните  запуск:
+```
+mimikatz.exe
+```
+
+**1.3 Получение прав администратора.**  
+В Mimikatz выполните команду для получения привилегий:
+```
+# privilege::debug
+```
+Эта команда обеспечит необходимые привилегии для извлечения Kerberos-ключей.
+
+**1.4 Извлечение Kerberos-ключа с помощью команды**  
+Для извлечения Kerberos-ключа учетной записи машины используйте команду:
+```
+# lsadump::dcsync /user:PC$
+```
+Замените **PC$** на имя вашей машины, если оно отличается.
+
+**1.5 Найти необходимые строки в выводе.**  
+В выводе команды найдите строку с заголовком **Supplemental Credentials**, которая будет содержать информацию о Kerberos-ключах, например:
+```
+Supplemental Credentials:
+* Primary:Kerberos-Newer-Keys *
+    Default Salt : DOMAIN.COPYhostpc.domain.copy
+    Default Iterations : 4096
+    Credentials
+      aes256_hmac       (4096) : fb43b1fdcff70138044573e921d96fb5b1047d5863acc3144ff182f4f2241243
+```
+
+**1.6 Извлечь Kerberos-ключ.**   
+Из полученной информации скопируйте ключ пароля (например, fb43b1fdcff70138044573e921d96fb5b1047d5863acc3144ff182f4f2241243) и сохраните его для дальнейшего использования.
+
+
+**2. Использование Kerberos-ключа для создания keytab файла**
+
+**2.1 Установка Heimdal Kerberos.**  
+Для создания keytab файла с использованием Kerberos-ключа, необходимо установить программу **Heimdal Kerberos** для использования **ktutil**. Скачайте версию [Heimdal 7.4.0 (64-bit or 32-bit)](https://www.secure-endpoints.com/heimdal/#download).
+
+**2.2 Добавление Heimdal в системную переменную PATH.**   
+Чтобы упростить запуск утилиты ktutil, добавьте папку с программой в системную переменную PATH:
+- Нажмите **Win + R**, введите **sysdm.cpl** и нажмите **Enter**.
+- Перейдите во вкладку **Дополнительно** → **Переменные среды**.
+- В разделе **Системные переменные** найдите переменную **Path** и нажмите **Изменить**.
+- Нажмите **Создать** и добавьте путь к папке, где находится **ktutil.exe**, например: C:\Program Files\Heimdal\bin.
+
+**3. Создание keytab файла с использованием Kerberos-ключа.**
+
+**3.1 Откройте командную строку от имени администратора.**  
+На контроллере домена откройте **cmd** от имени администратора.
+
+**3.2 Создание keytab файла для учетной записи машины**  
+Для создания keytab файла используйте следующую команду, указав извлечённый Kerberos-ключ:
+```bash
+ktutil -k combined.keytab add --principal=PC$@DOMAIN.TEST --kvno=1 --enctype=aes256-cts-hmac-sha1-96 -H -w fb43b1fdcff70138044573e921d96fb5b1047d5863acc3144ff182f4f2241243
+```
+- Замените PC$@DOMAIN.TEST на имя вашей машины и домена.
+- Убедитесь, что используете правильный **Key Version Number (kvno)**.
+
+**3.3 Получение kvno.**  
+Для того чтобы убедиться в правильности **kvno** (Key Version Number), выполните следующие команды в PowerShell от имени администратора:
+- Для машины PC:
+  ```powershell
+  Get-ADComputer PC -Properties msDS-KeyVersionNumber
+  ```
+- Для пользователя Admin:
+  ```powershell
+  Get-ADUser Admin -Properties msDS-KeyVersionNumber
+  ```
+- Для всех машин:
+  ```powershell
+  Get-ADComputer -Filter * -Properties msDS-KeyVersionNumber | Select-Object Name, msDS-KeyVersionNumber
+  ```
+- Для всех пользователей:
+  ```powershell
+  Get-ADUser -Filter * -Properties msDS-KeyVersionNumber | Select-Object Name, msDS-KeyVersionNumber
+  ```
+
+**3.4 Создание keytab файла для учетной записи пользователя**  
+Для создания keytab файла для пользователя **Admin**, можно использовать пароль учетной записи, без необходимости извлекать Kerberos-ключ. Выполните команду:
+```bash
+ktutil -k combined.keytab add --principal=Admin@DOMAIN.TEST --kvno=2 --enctype=aes256-cts-hmac-sha1-96 -w <пароль учётной записи Admin>
+```
+
+ **4. Проверка содержимого созданного keytab файла.**
+
+**4.1 Просмотр содержимого keytab файла.**  
+Для проверки созданного keytab файла используйте команду:
+```
+ktutil -k combined.keytab list
+```
+
+**4.2 Расположение созданного файла.**  
+Созданный keytab файл будет сохранён в указанной директории (например, C:\Users\Администратор\combined.keytab).
+
+---
+
